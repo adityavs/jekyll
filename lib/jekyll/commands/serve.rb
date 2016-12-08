@@ -3,18 +3,17 @@ module Jekyll
     class Serve < Command
       class << self
         COMMAND_OPTIONS = {
-          "ssl_cert" => ["--ssl-cert [CERT]", "X.509 (SSL) certificate."],
-          "host"     => ["host", "-H", "--host [HOST]", "Host to bind to"],
-          "open_url" => ["-o", "--open-url", "Launch your browser with your site."],
-          "detach"   => ["-B", "--detach", "Run the server in the background (detach)"],
-          "ssl_key"  => ["--ssl-key [KEY]", "X.509 (SSL) Private Key."],
-          "port"     => ["-P", "--port [PORT]", "Port to listen on"],
-          "baseurl"  => ["-b", "--baseurl [URL]", "Base URL"],
-          "show_dir_listing" => ["--show-dir-listing",
+          "ssl_cert"           => ["--ssl-cert [CERT]", "X.509 (SSL) certificate."],
+          "host"               => ["host", "-H", "--host [HOST]", "Host to bind to"],
+          "open_url"           => ["-o", "--open-url", "Launch your site in a browser"],
+          "detach"             => ["-B", "--detach", "Run the server in the background"],
+          "ssl_key"            => ["--ssl-key [KEY]", "X.509 (SSL) Private Key."],
+          "port"               => ["-P", "--port [PORT]", "Port to listen on"],
+          "show_dir_listing"   => ["--show-dir-listing",
             "Show a directory listing instead of loading your index file."],
           "skip_initial_build" => ["skip_initial_build", "--skip-initial-build",
             "Skips the initial site build which occurs before the server is started."]
-        }
+        }.freeze
 
         #
 
@@ -33,7 +32,10 @@ module Jekyll
             cmd.action do |_, opts|
               opts["serving"] = true
               opts["watch"  ] = true unless opts.key?("watch")
+              config = opts["config"]
+              opts["url"] = default_url(opts) if Jekyll.env == "development"
               Build.process(opts)
+              opts["config"] = config
               Serve.process(opts)
             end
           end
@@ -46,11 +48,7 @@ module Jekyll
           destination = opts["destination"]
           setup(destination)
 
-          server = WEBrick::HTTPServer.new(webrick_opts(opts)).tap { |o| o.unmount("") }
-          server.mount(opts["baseurl"], Servlet, destination, file_handler_opts)
-          Jekyll.logger.info "Server address:", server_address(server, opts)
-          launch_browser server, opts if opts["open_url"]
-          boot_or_detach server, opts
+          start_up_webrick(opts, destination)
         end
 
         # Do a base pre-setup of WEBRick so that everything is in place
@@ -93,11 +91,22 @@ module Jekyll
             )
           }
 
-          opts[:DirectoryIndex] = [] if opts[:JekyllOptions]['show_dir_listing']
+          opts[:DirectoryIndex] = [] if opts[:JekyllOptions]["show_dir_listing"]
 
           enable_ssl(opts)
           enable_logging(opts)
           opts
+        end
+
+        #
+
+        private
+        def start_up_webrick(opts, destination)
+          server = WEBrick::HTTPServer.new(webrick_opts(opts)).tap { |o| o.unmount("") }
+          server.mount(opts["baseurl"], Servlet, destination, file_handler_opts)
+          Jekyll.logger.info "Server address:", server_address(server, opts)
+          launch_browser server, opts if opts["open_url"]
+          boot_or_detach server, opts
         end
 
         # Recreate NondisclosureName under utf-8 circumstance
@@ -107,7 +116,7 @@ module Jekyll
           WEBrick::Config::FileHandler.merge({
             :FancyIndexing     => true,
             :NondisclosureName => [
-              '.ht*', '~*'
+              ".ht*", "~*"
             ]
           })
         end
@@ -115,12 +124,35 @@ module Jekyll
         #
 
         private
-        def server_address(server, opts)
-          address = server.config[:BindAddress]
-          baseurl = "#{opts["baseurl"]}/" if opts["baseurl"]
-          port = server.config[:Port]
+        def server_address(server, options = {})
+          format_url(
+            server.config[:SSLEnable],
+            server.config[:BindAddress],
+            server.config[:Port],
+            options["baseurl"]
+          )
+        end
 
-          "http://#{address}:#{port}#{baseurl}"
+        private
+        def format_url(ssl_enabled, address, port, baseurl = nil)
+          format("%{prefix}://%{address}:%{port}%{baseurl}", {
+            :prefix  => ssl_enabled ? "https" : "http",
+            :address => address,
+            :port    => port,
+            :baseurl => baseurl ? "#{baseurl}/" : ""
+          })
+        end
+
+        #
+
+        private
+        def default_url(opts)
+          config = configuration_from_options(opts)
+          format_url(
+            config["ssl_cert"] && config["ssl_key"],
+            config["host"] == "127.0.0.1" ? "localhost" : config["host"],
+            config["port"]
+          )
         end
 
         #
@@ -170,22 +202,27 @@ module Jekyll
         # forget to add one of the certificates.
 
         private
+        # rubocop:disable Metrics/AbcSize
         def enable_ssl(opts)
           return if !opts[:JekyllOptions]["ssl_cert"] && !opts[:JekyllOptions]["ssl_key"]
           if !opts[:JekyllOptions]["ssl_cert"] || !opts[:JekyllOptions]["ssl_key"]
+            # rubocop:disable Style/RedundantException
             raise RuntimeError, "--ssl-cert or --ssl-key missing."
           end
-
           require "openssl"
           require "webrick/https"
-          source_key = Jekyll.sanitized_path(opts[:JekyllOptions]["source"], opts[:JekyllOptions]["ssl_key" ])
-          source_certificate = Jekyll.sanitized_path(opts[:JekyllOptions]["source"], opts[:JekyllOptions]["ssl_cert"])
-          opts[:SSLCertificate] = OpenSSL::X509::Certificate.new(File.read(source_certificate))
+          source_key = Jekyll.sanitized_path(opts[:JekyllOptions]["source"], \
+                    opts[:JekyllOptions]["ssl_key" ])
+          source_certificate = Jekyll.sanitized_path(opts[:JekyllOptions]["source"], \
+                    opts[:JekyllOptions]["ssl_cert"])
+          opts[:SSLCertificate] =
+            OpenSSL::X509::Certificate.new(File.read(source_certificate))
           opts[:SSLPrivateKey ] = OpenSSL::PKey::RSA.new(File.read(source_key))
-          opts[:EnableSSL] = true
+          opts[:SSLEnable] = true
         end
 
         private
+
         def start_callback(detached)
           unless detached
             proc do
@@ -196,7 +233,7 @@ module Jekyll
 
         private
         def mime_types
-          file = File.expand_path('../mime.types', File.dirname(__FILE__))
+          file = File.expand_path("../mime.types", File.dirname(__FILE__))
           WEBrick::HTTPUtils.load_mime_types(file)
         end
       end

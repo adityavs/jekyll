@@ -1,6 +1,7 @@
 require "webrick"
 require "mercenary"
 require "helper"
+require "openssl"
 
 class TestCommandsServe < JekyllUnitTest
   def custom_opts(what)
@@ -11,12 +12,19 @@ class TestCommandsServe < JekyllUnitTest
 
   context "with a program" do
     setup do
-      @merc, @cmd = nil, Jekyll::Commands::Serve
+      @merc = nil
+      @cmd = Jekyll::Commands::Serve
       Mercenary.program(:jekyll) do |p|
         @merc = @cmd.init_with_program(
           p
         )
       end
+      Jekyll.sites.clear
+      allow(SafeYAML).to receive(:load_file).and_return({})
+      allow(Jekyll::Commands::Build).to receive(:build).and_return("")
+    end
+    teardown do
+      Jekyll.sites.clear
     end
 
     should "label itself" do
@@ -63,7 +71,7 @@ class TestCommandsServe < JekyllUnitTest
 
       should "use user port" do
         # WHAT?!?!1 Over 9000? That's impossible.
-        assert_equal 9001, custom_opts( { "port" => 9001 })[
+        assert_equal 9001, custom_opts({ "port" => 9001 })[
           :Port
         ]
       end
@@ -71,6 +79,57 @@ class TestCommandsServe < JekyllUnitTest
       should "use empty directory index list when show_dir_listing is true" do
         opts = { "show_dir_listing" => true }
         assert custom_opts(opts)[:DirectoryIndex].empty?
+      end
+
+      should "keep config between build and serve" do
+        custom_options = {
+          "config"  => %w(_config.yml _development.yml),
+          "serving" => true,
+          "watch"   => false, # for not having guard output when running the tests
+          "url"     => "http://localhost:4000"
+        }
+
+        expect(Jekyll::Commands::Serve).to receive(:process).with(custom_options)
+        @merc.execute(:serve, { "config" => %w(_config.yml _development.yml),
+                                "watch"  => false })
+      end
+
+      context "in development environment" do
+        setup do
+          expect(Jekyll).to receive(:env).and_return("development")
+          expect(Jekyll::Commands::Serve).to receive(:start_up_webrick)
+        end
+        should "set the site url by default to `http://localhost:4000`" do
+          @merc.execute(:serve, { "watch" => false, "url" => "https://jekyllrb.com/" })
+
+          assert_equal 1, Jekyll.sites.count
+          assert_equal "http://localhost:4000", Jekyll.sites.first.config["url"]
+        end
+
+        should "take `host`, `port` and `ssl` into consideration if set" do
+          @merc.execute(:serve, {
+            "watch"    => false,
+            "host"     => "example.com",
+            "port"     => "9999",
+            "url"      => "https://jekyllrb.com/",
+            "ssl_cert" => "foo",
+            "ssl_key"  => "bar"
+          })
+
+          assert_equal 1, Jekyll.sites.count
+          assert_equal "https://example.com:9999", Jekyll.sites.first.config["url"]
+        end
+      end
+
+      context "not in development environment" do
+        should "not update the site url" do
+          expect(Jekyll).to receive(:env).and_return("production")
+          expect(Jekyll::Commands::Serve).to receive(:start_up_webrick)
+          @merc.execute(:serve, { "watch" => false, "url" => "https://jekyllrb.com/" })
+
+          assert_equal 1, Jekyll.sites.count
+          assert_equal "https://jekyllrb.com/", Jekyll.sites.first.config["url"]
+        end
       end
 
       context "verbose" do
@@ -83,7 +142,7 @@ class TestCommandsServe < JekyllUnitTest
         end
       end
 
-      context "enabling ssl" do
+      context "enabling SSL" do
         should "raise if enabling without key or cert" do
           assert_raises RuntimeError do
             custom_opts({
@@ -104,13 +163,13 @@ class TestCommandsServe < JekyllUnitTest
           allow(File).to receive(:read).and_return("foo")
 
           result = custom_opts({
-            "ssl_cert" => "foo",
-            "source" => "bar",
+            "ssl_cert"   => "foo",
+            "source"     => "bar",
             "enable_ssl" => true,
-            "ssl_key" => "bar"
+            "ssl_key"    => "bar"
           })
 
-          assert result[:EnableSSL]
+          assert result[:SSLEnable]
           assert_equal result[:SSLPrivateKey ], "c2"
           assert_equal result[:SSLCertificate], "c1"
         end
