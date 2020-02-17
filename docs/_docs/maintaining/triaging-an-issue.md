@@ -1,7 +1,5 @@
 ---
 title: "Triaging an Issue"
-layout: docs
-permalink: /docs/maintaining/triaging-an-issue/
 ---
 
 **This guide is for maintainers.** These special people have **write access** to one or more of Jekyll's repositories and help merge the contributions of others. You may find what is written here interesting, but it’s definitely not for everyone.
@@ -53,4 +51,4 @@ Is what they wanted to get something we want to happen? Sometimes a bug report i
 
 ### Staleness and automatic closure
 
-@jekyllbot will automatically mark issues as `stale` if no activity occurs for at least one month. @jekyllbot leaves a comment asking for information about reproducibility in current versions. If no one responds after another month, the issue is automatically closed.
+@jekyllbot will automatically mark issues as `stale` if no activity occurs for at least one month. @jekyllbot leaves a comment asking for information about reproducibility in current versions. If no one responds after another month, the issue is automatically closed. This behavior can be suppressed by setting the [`pinned` label](/docs/maintaining/special-labels/#pinned).
